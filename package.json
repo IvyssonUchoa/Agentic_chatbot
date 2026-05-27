@@ -1,0 +1,24 @@
+{
+  "name": "agentic_chatbot",
+  "version": "1.0.0",
+  "description": "Chatbot de Whatsapp para secretarias escolares usando Agente de AI ",
+  "license": "ISC",
+  "author": "Ivysson Fernandes",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.40",
+    "@langchain/google-genai": "^2.1.27",
+    "dotenv": "^17.4.2",
+    "langchain": "^1.4.0",
+    "qrcode-terminal": "^0.12.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "whatsapp-web.js": "^1.34.6",
+    "zod": "^4.4.3"
+  }
+}

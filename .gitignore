@@ -1,0 +1,9 @@
+/.wwebjs_auth/
+/.wwebjs_cache/
+
+node_modules/
+
+src/tools/testedb.js
+
+.env
+*.sqlite
