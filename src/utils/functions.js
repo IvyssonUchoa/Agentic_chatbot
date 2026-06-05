@@ -14,18 +14,22 @@ export async function typing(chat) {
 
 
 export function getTimestamp(dateTime) {
-    // Função que retorna o timestamp de uma string de data e hora no formato "DD/MM/YYYY HH:mm"
+    // Converte "DD/MM/YYYY HH:mm" em um formato local seguro para armazenamento.
+    // Não usa toISOString() para evitar conversão automática para UTC e mudança de dia.
     try {
         const partes = dateTime.split(" ");
         const stringData = partes[0];
-        const stringHora = partes[1]; 
+        const stringHora = partes[1];
 
         const [dia, mes, ano] = stringData.split("/");
         const [horas, minutos] = stringHora.split(":");
 
-        const dataFormatada = new Date(ano, mes - 1, dia, horas, minutos).toISOString();
+        const diaFormatado = dia.padStart(2, "0");
+        const mesFormatado = mes.padStart(2, "0");
+        const horaFormatada = horas.padStart(2, "0");
+        const minutoFormatado = minutos.padStart(2, "0");
 
-        return dataFormatada;
+        return `${ano}-${mesFormatado}-${diaFormatado} ${horaFormatada}:${minutoFormatado}:00`;
 
     } catch (error) {
         console.error("Erro ao formatar data: ", error);

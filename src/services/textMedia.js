@@ -45,6 +45,7 @@ export class TextMediaService {
 
                 else {
                     console.log("Tipo de mídia não suportada");
+                    console.log(type);
                 }
 
                 return messageContent;

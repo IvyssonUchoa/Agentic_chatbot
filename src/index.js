@@ -18,6 +18,7 @@ const client = new Client({
       "--disable-dev-shm-usage",
       "--disable-gpu"
     ],
+    // executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' // Use essa opção caso dê erro ao procurar pelo Chrome
   },
 });
 

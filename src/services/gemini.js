@@ -1,10 +1,11 @@
 import "dotenv/config";
+import { z } from "zod";
 
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import { RunnableWithMessageHistory } from "@langchain/core/runnables";
 import { InMemoryChatMessageHistory } from "@langchain/core/chat_history";
-import { AIMessage, ToolMessage, HumanMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 import {forward_to_human } from "../tools/forwardToHuman.js"
 import { consult_events } from "../tools/consultEvents.js";
@@ -13,11 +14,12 @@ import { consult_events } from "../tools/consultEvents.js";
 export class LLMService {
     constructor() {
         try {
+            //// Criação do Agente principal ////
             const tools = [forward_to_human, consult_events]
 
             const llm = new ChatGoogleGenerativeAI({
                 apiKey: process.env.GOOGLE_API_KEY,
-                model: "gemini-2.5-flash-lite", 
+                model: "gemini-2.5-flash", 
                 maxOutputTokens: 2048, 
                 temperature: 0.7, // Ajuste para equilíbrio entre foco e naturalidade
             });
@@ -58,6 +60,12 @@ export class LLMService {
                     - Puxe a informação da data atual do proprio prompt usando a variável 'current_datetime'. Evite perguntar a data para o usuário a menos que seja necessário e você não tenha essa informação.
                     - Caso o usuário lhe peça para procurar algo em uma data específica e não lhe passar mês ou ano, use a informação de data atual para preencher os dados faltantes. Por exemplo, se hoje é 10/04/2026 e o usuário pedir "Quais eventos tem no dia 15?", entenda que ele está se referindo ao dia 15/04/2026. Se ele pedir "E no dia 20 de maio?", entenda que ele está se referindo ao dia 20/05/2026.
                     - Se uma ferramenta existir para executar uma ação, utilize-a.
+                    
+                    # Interpretação de Eventos
+                    - A ferramenta "consult_events" retorna eventos com períodos específicos (ex: "20/05/2026 a 22/05/2026" significa 20, 21 e 22 de maio, não mais).
+                    - NUNCA infira ou presuma datas que NÃO estão explicitamente no período retornado pela ferramenta.
+                    - Se há múltiplos eventos no mês (ex: 20-22/05 E 29/05), mencione cada um com seus períodos exatos.
+                    - SEMPRE cite as datas exatas retornadas pela ferramenta, sem adicionar ou omitir dias.
 
                     # Informações da Sessão
                     - Id / SessionId do usuário atual é {sessionId}
@@ -71,13 +79,46 @@ export class LLMService {
 
             const chain = this.promptTemplate.pipe(this.llmWithTools);
 
-            this.agent = new RunnableWithMessageHistory({
+            this.agent = new RunnableWithMessageHistory({ // Agente principal
                 runnable: chain,
                 getMessageHistory: this.getMessageHistoryForSession,
                 inputMessagesKey: "input",
                 historyMessagesKey: "historico_chat",
             });
 
+            //// Roteador de intenções ////
+            const schemaRoteador = z.object({
+                intencao: z.enum(["MATRICULA", "GERAL"]).describe("A classificação da intenção da mensagem do usuário")
+            });
+
+            const llmRouterBase = new ChatGoogleGenerativeAI({ // LLM base para o roteamento
+                apiKey: process.env.GOOGLE_API_KEY,
+                model: "gemini-2.5-flash-lite", 
+                temperature: 0,
+            });
+
+            // 2. Acoplamos o schema ao modelo para forçar a saída estruturada
+            this.routerLlm = llmRouterBase.withStructuredOutput(schemaRoteador);
+
+            //// Extrator de dados de Matrícula ////
+            const schemaExtracao = z.object({
+                nome: z.string().nullable().describe("Nome do aluno, se mencionado"),
+                idade: z.string().nullable().describe("Idade do aluno, se mencionada"),
+                turma: z.string().nullable().describe("Turma, série ou curso, se mencionado"),
+                cpf: z.string().nullable().describe("CPF, se mencionado"),
+            });
+
+            // Criamos uma instância separada com temperatura 0 para extração precisa
+            const llmExtratorBase = new ChatGoogleGenerativeAI({
+                apiKey: process.env.GOOGLE_API_KEY,
+                model: "gemini-2.5-flash-lite", 
+                temperature: 0, 
+            });
+
+            // Guardamos o extrator estruturado na instância da classe
+            this.extratorLlm = llmExtratorBase.withStructuredOutput(schemaExtracao);
+
+            //// Outras ferramentas ////
             this.tools = tools;
 
             this.messageHistories = {};
@@ -88,6 +129,23 @@ export class LLMService {
         } catch (error) {
             console.error("erro ao inicializar o GeminiService: ", error);
         }
+    }
+
+
+    async roteador(humanMessage) {
+        const systemMessage = new SystemMessage({
+            content: `Você é um classificador de intenções da secretaria da escola Instituto Ana Nery.
+            Analise a mensagem enviada pelo usuário.
+            
+            Classifique a intenção em APENAS uma destas opções do schema:
+            - MATRICULA: Se o usuário quer se inscrever, matricular um aluno ou iniciar esse processo.
+            - GERAL: Para saudações, dúvidas de horários, eventos ou querer falar com a diretora.`
+        });
+
+        // Envia o array de mensagens diretamente para o modelo estruturado
+        const resultado = await this.routerLlm.invoke([systemMessage, humanMessage]);
+
+        return resultado.intencao;
     }
 
 
@@ -104,6 +162,9 @@ export class LLMService {
             this.messageHistories[sessionId] = {
                 history: new InMemoryChatMessageHistory(),
                 ultimoAcesso: agora,
+
+                estadoAtual: "GERAL", // Pode ser 'GERAL' ou 'MATRICULA'
+                dadosMatricula: { nome: null, idade: null, turma: null, cpf: null }
             };
         } else {
             this.messageHistories[sessionId].ultimoAcesso = agora;
@@ -113,49 +174,40 @@ export class LLMService {
     };
 
 
-    async getResponse(prompt, sessionId) {
-        try {
-            if (!sessionId) {
-                throw new Error("É necessário fornecer um sessionId.");
-            }
+    async pipelineMatricula(humanMessage, sessionId) {
+        const sessao = this.messageHistories[sessionId];
+        
+        // Criamos uma instrução de sistema para guiar a extração estruturada
+        const systemMessage = new SystemMessage({
+            content: "Analise a mensagem do usuário e extraia os dados solicitados para preenchimento do schema de matrícula."
+        });
 
-            // let message = prompt; // Fazer tratamento do prompt aqui
-            const humanMessage = new HumanMessage({ content: prompt });
+        // O extrator agora recebe a mensagem multimídia nativamente!
+        const dadosExtraidos = await this.extratorLlm.invoke([systemMessage, humanMessage]);
 
-            console.log("Enviando mensagem para Gemini");
+        // Validação de strings vazias para evitar bugs de pulo de campos
+        if (dadosExtraidos.nome && dadosExtraidos.nome.trim() !== "") sessao.dadosMatricula.nome = dadosExtraidos.nome;
+        if (dadosExtraidos.idade && String(dadosExtraidos.idade).trim() !== "") sessao.dadosMatricula.idade = dadosExtraidos.idade;
+        if (dadosExtraidos.turma && dadosExtraidos.turma.trim() !== "") sessao.dadosMatricula.turma = dadosExtraidos.turma;
+        if (dadosExtraidos.cpf && dadosExtraidos.cpf.trim() !== "") sessao.dadosMatricula.cpf = dadosExtraidos.cpf;
 
-            const response = await this.agent.invoke(
-                { 
-                    input: [humanMessage],
-                    sessionId: sessionId,
-                    current_datetime: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
-                },
-                { configurable: { sessionId: sessionId } }
-            );
+        // Verifica o que falta
+        const dados = sessao.dadosMatricula;
+        if (!dados.nome) return "Que ótimo! Vou te ajudar com a matrícula. Para começar, qual é o nome completo do aluno?";
+        if (!dados.idade) return `Certo, anotado o nome ${dados.nome}. Qual é a idade do aluno?`;
+        if (!dados.turma) return "Perfeito. Em qual turma ou ano escolar você deseja realizar a matrícula?";
+        if (!dados.cpf) return "Para finalizar o cadastro, por favor, me informe o CPF do responsável.";
 
-            // console.log("resposta bruta obtida");
-            // console.log(response);
+        // Se todos os dados foram coletados, salva e encerra o pipeline
+        console.log("DADOS COLETADOS PARA PLANILHA:", dados);
 
-            // Verifica se há chamadas de ferramentas
-            if (response.tool_calls && response.tool_calls.length > 0) {
-                return this.processTools(response, sessionId);
-            }
+        // AQUI VOCÊ CHAMARIA SUA FUNÇÃO DE SALVAR NA PLANILHA
+        
+        // Reseta o estado para voltar ao atendimento normal
+        sessao.estadoAtual = "GERAL";
+        sessao.dadosMatricula = { nome: null, idade: null, turma: null, cpf: null };
 
-            // Extrai o texto da resposta (pode ser string ou array de content blocks)
-            const content = response.content;
-            if (typeof content === 'string') {
-                return content;
-            }
-            if (Array.isArray(content) && content.length > 0) {
-                // Extrai o texto do primeiro bloco de conteúdo
-                return typeof content[0] === 'string' ? content[0] : (content[0].text || "Desculpe, não consegui processar sua mensagem.");
-            }
-            return "Desculpe, não consegui processar sua mensagem.";
-
-        } catch (error) {
-            console.error("Erro ao obter resposta do Gemini: ", error);
-            return "Desculpe, ocorreu um erro ao processar sua mensagem";
-        }
+        return "Tudo certo! Os dados foram enviados para a secretaria e a pré-matrícula foi registrada com sucesso. Posso ajudar com mais alguma coisa?";
     }
 
 
@@ -217,6 +269,74 @@ export class LLMService {
             return typeof content[0] === 'string' ? content[0] : (content[0].text || "Desculpe, não consegui processar sua mensagem.");
         }
         return "Desculpe, não consegui processar sua mensagem.";
+    }
+
+
+    async getResponse(prompt, sessionId) {
+        try {
+            if (!sessionId) {
+                throw new Error("É necessário fornecer um sessionId.");
+            }
+
+            this.getMessageHistoryForSession(sessionId);
+            const sessao = this.messageHistories[sessionId];
+
+            const humanMessage = new HumanMessage({ content: prompt });
+
+            // 1. Se o usuário JÁ ESTÁ no processo de matrícula, envia direto pro pipeline
+            if (sessao.estadoAtual === "MATRICULA") {
+                await sessao.history.addMessage(humanMessage);
+                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId);
+                await sessao.history.addMessage(new AIMessage({ content: respostaPipeline }));
+                return respostaPipeline;
+            }
+
+            // 2. Se está no atendimento GERAL, avalia se a intenção agora é Matrícula
+            const intencao = await this.roteador(humanMessage);
+            console.log(intencao);
+            if (intencao === "MATRICULA") {
+                sessao.estadoAtual = "MATRICULA";
+                
+                await sessao.history.addMessage(humanMessage);
+                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId);
+                await sessao.history.addMessage(new AIMessage({ content: respostaPipeline }));
+                return respostaPipeline;
+            }
+
+            console.log("Enviando mensagem para Gemini");
+
+            const response = await this.agent.invoke(
+                { 
+                    input: [humanMessage],
+                    sessionId: sessionId,
+                    current_datetime: new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
+                },
+                { configurable: { sessionId: sessionId } }
+            );
+
+            // console.log("resposta bruta obtida");
+            // console.log(response);
+
+            // Verifica se há chamadas de ferramentas
+            if (response.tool_calls && response.tool_calls.length > 0) {
+                return this.processTools(response, sessionId);
+            }
+
+            // Extrai o texto da resposta (pode ser string ou array de content blocks)
+            const content = response.content;
+            if (typeof content === 'string') {
+                return content;
+            }
+            if (Array.isArray(content) && content.length > 0) {
+                // Extrai o texto do primeiro bloco de conteúdo
+                return typeof content[0] === 'string' ? content[0] : (content[0].text || "Desculpe, não consegui processar sua mensagem.");
+            }
+            return "Desculpe, não consegui processar sua mensagem.";
+
+        } catch (error) {
+            console.error("Erro ao obter resposta do Gemini: ", error);
+            return "Desculpe, ocorreu um erro ao processar sua mensagem";
+        }
     }
 
 }

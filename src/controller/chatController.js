@@ -93,7 +93,7 @@ export class chatController {
                 //// Gera uma notificação ////
                 // Caso o atendimento mude para humano após a resposta do agente, notifica ao atendente 
                 if (! await isAgenticService(msg)){
-                    const serviceContact = '';
+                    const serviceContact = '@g.us';
                     const msgService = await this.client.getChatById(serviceContact);
 
                     console.log(msgService);
