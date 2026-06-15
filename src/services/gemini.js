@@ -88,7 +88,7 @@ export class LLMService {
 
             //// Roteador de intenções ////
             const schemaRoteador = z.object({
-                intencao: z.enum(["MATRICULA", "GERAL"]).describe("A classificação da intenção da mensagem do usuário")
+                intencao: z.enum(["MATRICULA", "GERAL"]).describe("Classifica a intenção. Retorne MATRICULA apenas para iniciar o cadastro. Retorne GERAL para dúvidas de preços, vagas e informações")
             });
 
             const llmRouterBase = new ChatGoogleGenerativeAI({ // LLM base para o roteamento
@@ -134,12 +134,16 @@ export class LLMService {
 
     async roteador(humanMessage) {
         const systemMessage = new SystemMessage({
-            content: `Você é um classificador de intenções da secretaria da escola Instituto Ana Nery.
-            Analise a mensagem enviada pelo usuário.
-            
-            Classifique a intenção em APENAS uma destas opções do schema:
-            - MATRICULA: Se o usuário quer se inscrever, matricular um aluno ou iniciar esse processo.
-            - GERAL: Para saudações, dúvidas de horários, eventos ou querer falar com a diretora.`
+            content: `Você é um classificador de intenções extremamente rigoroso da secretaria da escola Instituto Ana Nery.
+            Analise a mensagem enviada pelo usuário e classifique a intenção em APENAS uma destas opções do schema:
+
+            - MATRICULA: USE APENAS quando o usuário expressar a AÇÃO DIRETA e clara de que deseja iniciar o cadastro/matrícula neste exato momento. 
+              Exemplos de MATRICULA: "Quero matricular meu filho", "Como faço para me inscrever?", "Vamos fazer a matrícula".
+
+            - GERAL: USE PARA TODO O RESTO. Isso inclui obrigatoriamente perguntas sobre PREÇOS, VALORES, disponibilidade de vagas, como funciona o processo, saudações, horários, eventos ou falar com a diretora. 
+              Exemplos de GERAL: "Qual o valor da mensalidade?", "Quanto custa a matrícula?", "Tem vaga para o 6º ano?", "Bom dia".
+              
+            REGRA DE OURO: Se o usuário fez uma pergunta sobre vagas ou dinheiro, a intenção é GERAL, NUNCA matrícula.`
         });
 
         // Envia o array de mensagens diretamente para o modelo estruturado
@@ -174,7 +178,7 @@ export class LLMService {
     };
 
 
-    async pipelineMatricula(humanMessage, sessionId) {
+    async pipelineMatricula(humanMessage, sessionId, controller) {
         const sessao = this.messageHistories[sessionId];
         
         // Criamos uma instrução de sistema para guiar a extração estruturada
@@ -200,8 +204,11 @@ export class LLMService {
 
         // Se todos os dados foram coletados, salva e encerra o pipeline
         console.log("DADOS COLETADOS PARA PLANILHA:", dados);
-
-        // AQUI VOCÊ CHAMARIA SUA FUNÇÃO DE SALVAR NA PLANILHA
+        if (controller){
+            const matricula = `*Nova Solicitação de Pré-Matrícula recebida*\n\n*Nome do Aluno:* ${dados.nome}\n*Idade:* ${dados.idade}\n*Turma/Ano:* ${dados.turma}\n*CPF do Responsável:* ${dados.cpf}`;
+            
+            await controller.sendToAttendant(matricula, sessionId, dados.nome);
+        }
         
         // Reseta o estado para voltar ao atendimento normal
         sessao.estadoAtual = "GERAL";
@@ -211,7 +218,7 @@ export class LLMService {
     }
 
 
-    async processTools(aiMessage, sessionId){
+    async processTools(aiMessage, sessionId, controller){
         const toolMessages = [];
         console.log(`O LLM solicitou ${aiMessage.tool_calls.length} ferramenta(s).`);
 
@@ -222,6 +229,11 @@ export class LLMService {
                 if (toolCall.name === 'forward_to_human') {
                     const id = toolCall.args.id;
                     resultadoDaTool = await forward_to_human.invoke({ id: id });
+
+                    if (controller){
+                        const messagem = "O usuário solicita o atendimento da Diretora. \nO atendimento com o agente foi encerrado";                    
+                        await controller.sendToAttendant(messagem, sessionId, sessionId);
+                    }
                 } 
 
                 if (toolCall.name === 'consult_events') {
@@ -272,7 +284,7 @@ export class LLMService {
     }
 
 
-    async getResponse(prompt, sessionId) {
+    async getResponse(prompt, sessionId, controller) {
         try {
             if (!sessionId) {
                 throw new Error("É necessário fornecer um sessionId.");
@@ -286,7 +298,7 @@ export class LLMService {
             // 1. Se o usuário JÁ ESTÁ no processo de matrícula, envia direto pro pipeline
             if (sessao.estadoAtual === "MATRICULA") {
                 await sessao.history.addMessage(humanMessage);
-                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId);
+                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId, controller);
                 await sessao.history.addMessage(new AIMessage({ content: respostaPipeline }));
                 return respostaPipeline;
             }
@@ -298,7 +310,7 @@ export class LLMService {
                 sessao.estadoAtual = "MATRICULA";
                 
                 await sessao.history.addMessage(humanMessage);
-                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId);
+                const respostaPipeline = await this.pipelineMatricula(humanMessage, sessionId, controller);
                 await sessao.history.addMessage(new AIMessage({ content: respostaPipeline }));
                 return respostaPipeline;
             }
@@ -319,7 +331,7 @@ export class LLMService {
 
             // Verifica se há chamadas de ferramentas
             if (response.tool_calls && response.tool_calls.length > 0) {
-                return this.processTools(response, sessionId);
+                return this.processTools(response, sessionId, controller);
             }
 
             // Extrai o texto da resposta (pode ser string ou array de content blocks)

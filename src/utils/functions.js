@@ -37,6 +37,20 @@ export function getTimestamp(dateTime) {
     }
 }
 
+export async function setHumanState(from){
+    const st = new StateModel();
+
+    await st.setState(from, "Human");
+    return;
+}
+
+export async function setAgenticState(from){
+    const st = new StateModel();
+
+    await st.setState(from, "Agentic");
+    return;
+}
+
 // export async function returnToAgenticService(msg){
 //     const from = msg.from;
 //     const st = new StateModel();
