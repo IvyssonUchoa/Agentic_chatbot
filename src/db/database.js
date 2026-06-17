@@ -31,5 +31,22 @@ export async function initializeDB() {
         )    
     `)
 
+    await db.exec(`
+        CREATE TABLE IF NOT EXISTS prices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            grade TEXT UNIQUE NOT NULL,
+            price REAL NOT NULL,
+            description TEXT NOT NULL
+        )    
+    `);
+
+    const count = await db.get("SELECT COUNT(*) as count FROM prices");
+    if (count.count === 0) {
+        await db.run("INSERT INTO prices (grade, price, description) VALUES ('infantil', 650.00, 'Educação Infantil')");
+        await db.run("INSERT INTO prices (grade, price, description) VALUES ('fundamental_1', 750.00, 'Ensino Fundamental 1 (1º ao 5º ano)')");
+        await db.run("INSERT INTO prices (grade, price, description) VALUES ('fundamental_2', 850.00, 'Ensino Fundamental 2 (6º ao 9º ano)')");
+        console.log("Valores iniciais de mensalidade inseridos no banco.");
+    }
+
     console.log(`Banco de dados inicializado com sucesso!`);
 }

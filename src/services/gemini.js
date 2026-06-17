@@ -9,13 +9,14 @@ import { AIMessage, ToolMessage, HumanMessage, SystemMessage } from "@langchain/
 
 import {forward_to_human } from "../tools/forwardToHuman.js"
 import { consult_events } from "../tools/consultEvents.js";
+import { consult_prices } from "../tools/consultPrices.js";
 
 
 export class LLMService {
     constructor() {
         try {
             //// Criação do Agente principal ////
-            const tools = [forward_to_human, consult_events]
+            const tools = [forward_to_human, consult_events, consult_prices];
 
             const llm = new ChatGoogleGenerativeAI({
                 apiKey: process.env.GOOGLE_API_KEY,
@@ -57,6 +58,7 @@ export class LLMService {
                     Após executar a ferramenta, informe ao usuário que o contato foi encaminhado.
                     - Quando o usuário solicitar informaçõe sobre eventos escolares que estão por vir, você DEVE usar a ferramenta "consult_events" passando uma data no formato 'DD/MM/YYYY' para consulta do calendário de eventos da escola.
                     - Quando o usuário solicitar informações sobre os dias e horários de funcionamento da escola, você DEVE usar a ferramenta "consult_events" passando uma data no formato 'DD/MM/YYYY' para consultar se há eventos que afetam o funcionamento da escola naquele dia.
+                    - Quando o usuário perguntar sobre preços, valores ou custos de mensalidade, você DEVE usar a ferramenta "consult_prices". Se o usuário não disser a série ou idade, consulte a opção "todos" e apresente a tabela completa de forma amigável.
                     - Puxe a informação da data atual do proprio prompt usando a variável 'current_datetime'. Evite perguntar a data para o usuário a menos que seja necessário e você não tenha essa informação.
                     - Caso o usuário lhe peça para procurar algo em uma data específica e não lhe passar mês ou ano, use a informação de data atual para preencher os dados faltantes. Por exemplo, se hoje é 10/04/2026 e o usuário pedir "Quais eventos tem no dia 15?", entenda que ele está se referindo ao dia 15/04/2026. Se ele pedir "E no dia 20 de maio?", entenda que ele está se referindo ao dia 20/05/2026.
                     - Se uma ferramenta existir para executar uma ação, utilize-a.
@@ -240,6 +242,11 @@ export class LLMService {
                     const date = toolCall.args.date;
                     resultadoDaTool = await consult_events.invoke({ date: date });
                 } 
+
+                if (toolCall.name === 'consult_prices') {
+                    const grade = toolCall.args.grade;
+                    resultadoDaTool = await consult_prices.invoke({ grade: grade });
+                }
                 
                 // Salva o resultado no formato esperado pelo LangChain
                 toolMessages.push(new ToolMessage({

@@ -187,7 +187,7 @@ export class chatController {
                 contactId = searchRes.data.payload[0].id;
             } else {
                 const createRes = await axios.post(`${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/contacts`, {
-                    name: nomeContato || numeroWhatsApp,
+                    name: numeroWhatsApp,
                     identifier: numeroWhatsApp // Fundamental para usarmos de volta no webhook
                 }, { headers });
                 contactId = createRes.data.payload.contact.id;
